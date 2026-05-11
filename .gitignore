@@ -39,8 +39,10 @@ backups/
 
 # Storage (uploaded files, generated PDFs, etc.)
 backend/storage/reports/*.pdf
+backend/storage/invoices/*.pdf
 backend/storage/uploads/*
 !backend/storage/reports/.gitkeep
+!backend/storage/invoices/.gitkeep
 !backend/storage/uploads/.gitkeep
 
 # Test coverage

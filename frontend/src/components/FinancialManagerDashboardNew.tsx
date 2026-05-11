@@ -1,6 +1,6 @@
 import React from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { DollarSign, TrendingUp, TrendingDown, CreditCard, AlertTriangle, PieChart as PieChartIcon } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertTriangle, PieChart as PieChartIcon } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { paymentService } from '../services/paymentService';
 import { farmerService } from '../services/farmerService';
@@ -24,6 +24,15 @@ const FinancialManagerDashboard: React.FC = () => {
   const totalDueAll = React.useMemo(() =>
     allPayments
       .filter((p) => p.status === 'pending' || p.status === 'approved')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+  , [allPayments]);
+  const totalPaidToFarmers = React.useMemo(() =>
+    allPayments
+      .filter((p) => p.status === 'paid')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+  , [allPayments]);
+  const totalOperatingCosts = React.useMemo(() =>
+    allPayments
       .reduce((sum, p) => sum + Number(p.amount || 0), 0)
   , [allPayments]);
   const pendingCount = React.useMemo(() => allPayments.filter((p) => p.status === 'pending').length, [allPayments]);
@@ -77,10 +86,6 @@ const FinancialManagerDashboard: React.FC = () => {
       showToast('❌ Failed to approve payment', 'error');
     }
   };
-  const handleGenerateInvoice = () => {
-    // TODO: Implement invoice generation flow
-    alert('Generate Invoice: This feature will open the invoice creation flow.');
-  };
   const handleFinancialReport = () => {
     setShowReportModal(true);
   };
@@ -94,10 +99,8 @@ const FinancialManagerDashboard: React.FC = () => {
   };
   // Financial KPIs data
   const financialKPIs = [
-    { title: 'Total Revenue', value: 'UGX 2.4M', change: '+12.5%', trend: 'up', icon: DollarSign },
     { title: 'Net Profit', value: 'UGX 680K', change: '+8.2%', trend: 'up', icon: TrendingUp },
-    { title: 'Operating Costs', value: 'UGX 1.72M', change: '-3.1%', trend: 'down', icon: TrendingDown },
-    { title: 'Cash Flow', value: 'UGX 420K', change: '+15.7%', trend: 'up', icon: CreditCard }
+    { title: 'Operating Costs', value: currency(totalOperatingCosts), change: `${totalPaidToFarmers > 0 ? currency(totalPaidToFarmers) + ' paid' : 'No payments'}`, trend: 'down', icon: TrendingDown }
   ];
 
   // Revenue and profit trends data
@@ -189,7 +192,7 @@ const FinancialManagerDashboard: React.FC = () => {
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Financial KPIs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6 mb-8">
           {financialKPIs.map((kpi, index) => (
             <div key={index} className="bg-white rounded-lg shadow-sm p-6">
               <div className="flex items-center justify-between">
@@ -513,12 +516,6 @@ const FinancialManagerDashboard: React.FC = () => {
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold mb-6">Quick Actions</h2>
               <div className="space-y-3">
-                <button onClick={handleGenerateInvoice} className="w-full p-3 bg-fm-secondary text-fm-primary rounded-lg hover:bg-fm-primary-light transition-colors text-left">
-                  <div className="flex items-center space-x-3">
-                    <DollarSign className="w-5 h-5" />
-                    <span className="font-medium">Generate Invoice</span>
-                  </div>
-                </button>
                 <button onClick={handleFinancialReport} className="w-full p-3 bg-fm-secondary text-fm-primary rounded-lg hover:bg-fm-primary-light transition-colors text-left">
                   <div className="flex items-center space-x-3">
                     <PieChartIcon className="w-5 h-5" />

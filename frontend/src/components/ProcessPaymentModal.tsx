@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, DollarSign, CreditCard } from 'lucide-react';
 import { paymentService } from '../services/paymentService';
+import { invoiceService } from '../services/invoiceService';
 import { formatUGX } from '../utils/currency';
 
 interface ProcessPaymentModalProps {
@@ -26,13 +27,23 @@ const ProcessPaymentModal: React.FC<ProcessPaymentModalProps> = ({
       setLoading(true);
       setError('');
 
+      const paymentId = payment._id || payment.id;
+
       // Update payment to 'paid' status with payment method and reference
-      await paymentService.updatePayment(payment._id || payment.id, {
+      await paymentService.updatePayment(paymentId, {
         status: 'paid',
         payment_method: paymentMethod,
         payment_date: new Date().toISOString(),
         ...(reference && { reference })
-      });
+      } as any);
+
+      // Automatically generate invoice after payment is processed
+      try {
+        await invoiceService.generateInvoice(paymentId);
+      } catch (invoiceError) {
+        console.error('Failed to generate invoice:', invoiceError);
+        // Don't fail the whole operation if invoice generation fails
+      }
 
       onSuccess();
       onClose();

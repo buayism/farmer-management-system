@@ -19,6 +19,9 @@ import searchRoutes from './routes/searchRoutes';
 import financeRoutes from './routes/financeRoutes';
 import formalReportRoutes from './routes/formalReports';
 import notificationRoutes from './routes/notifications';
+import invoiceRoutes from './routes/invoiceRoutes';
+import cropRoutes from './routes/cropRoutes';
+import cropCycleRoutes from './routes/cropCycleRoutes';
 
 // Load environment variables
 dotenv.config();
@@ -68,6 +71,9 @@ app.use('/api/search', searchRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/formal-reports', formalReportRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/invoices', invoiceRoutes);
+app.use('/api/crops', cropRoutes);
+app.use('/api/crop-cycles', cropCycleRoutes);
 
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { farmerService } from '../services/farmerService';
 import { paymentService } from '../services/paymentService';
+import { cropService } from '../services/cropService';
+import { cropCycleService } from '../services/cropCycleService';
 
 interface RecordCropDataModalProps {
   isOpen: boolean;
@@ -24,10 +26,12 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
   
   // Common fields
   const [farmers, setFarmers] = useState<any[]>([]);
+  const [crops, setCrops] = useState<any[]>([]);
   const [selectedFarmer, setSelectedFarmer] = useState('');
-  const [cropType, setCropType] = useState('maize');
+  const [cropType, setCropType] = useState('');
   const [variety, setVariety] = useState('');
   const [notes, setNotes] = useState('');
+  const [activeCropCycleId, setActiveCropCycleId] = useState<string | null>(null);
   
   // Planting specific
   const [plantingDate, setPlantingDate] = useState('');
@@ -56,11 +60,13 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [loadingFarmers, setLoadingFarmers] = useState(false);
+  const [loadingCrops, setLoadingCrops] = useState(false);
   
-  // Load farmers on mount
+  // Load farmers and crops on mount
   useEffect(() => {
     if (isOpen) {
       loadFarmers();
+      loadCrops();
     }
   }, [isOpen]);
   
@@ -77,20 +83,45 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
     }
   };
   
+  const loadCrops = async () => {
+    try {
+      setLoadingCrops(true);
+      const response = await cropService.getAllCrops();
+      const cropsList = Array.isArray(response?.data) ? response.data : (response?.data || []);
+      setCrops(cropsList);
+      // Set first crop as default if available
+      if (cropsList.length > 0 && !cropType) {
+        setCropType(cropsList[0].name.toLowerCase());
+      }
+    } catch (err) {
+      console.error('Failed to load crops:', err);
+    } finally {
+      setLoadingCrops(false);
+    }
+  };
+  
+  // Helper function to get rate for current crop
+  const getCropRate = (grade: string) => {
+    const selectedCrop = crops.find(c => c.name.toLowerCase() === cropType.toLowerCase());
+    return selectedCrop?.rates?.[grade] || CROP_RATES[cropType]?.[grade] || 0;
+  };
+  
   // Calculate advance payment for planting
   useEffect(() => {
     if (visitType === 'planting' && expectedYield && cropType) {
-      const rate = CROP_RATES[cropType]?.["Grade A"] || 0;
+      const selectedCrop = crops.find(c => c.name.toLowerCase() === cropType.toLowerCase());
+      const rate = selectedCrop?.rates?.["Grade A"] || CROP_RATES[cropType]?.["Grade A"] || 0;
       const expectedValue = parseFloat(expectedYield) * rate;
       const advance = expectedValue * (advancePercentage / 100);
       setAdvanceAmount(Math.round(advance));
     }
-  }, [expectedYield, cropType, advancePercentage, visitType]);
+  }, [expectedYield, cropType, advancePercentage, visitType, crops]);
   
   // Calculate final payment for harvest
   useEffect(() => {
     if (visitType === 'harvest' && actualQuantity && cropType && qualityGrade) {
-      const rate = CROP_RATES[cropType]?.[qualityGrade] || 0;
+      const selectedCrop = crops.find(c => c.name.toLowerCase() === cropType.toLowerCase());
+      const rate = selectedCrop?.rates?.[qualityGrade] || CROP_RATES[cropType]?.[qualityGrade] || 0;
       const totalValue = parseFloat(actualQuantity) * rate;
       setHarvestValue(Math.round(totalValue));
       
@@ -100,7 +131,7 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
       setPreviousAdvance(mockAdvance);
       setFinalPayment(Math.round(totalValue - mockAdvance));
     }
-  }, [actualQuantity, cropType, qualityGrade, visitType]);
+  }, [actualQuantity, cropType, qualityGrade, visitType, crops]);
   
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,24 +163,34 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
   };
   
   const handlePlantingSubmit = async () => {
+    // Get crop name for display
+    const selectedCrop = crops.find(c => c.name.toLowerCase() === cropType.toLowerCase());
+    const cropName = selectedCrop?.name || cropType;
+    
     // Create crop cycle record
     const cropCycleData = {
       farmer_id: selectedFarmer,
       crop_type: cropType,
+      crop_name: cropName,
       variety,
       planting_date: plantingDate,
       area_planted: parseFloat(areaPlanted),
       expected_yield_kg: parseFloat(expectedYield),
-      rate_per_kg: CROP_RATES[cropType]["Grade A"],
-      expected_value: parseFloat(expectedYield) * CROP_RATES[cropType]["Grade A"],
+      rate_per_kg: getCropRate("Grade A"),
+      expected_value: parseFloat(expectedYield) * getCropRate("Grade A"),
       advance_percentage: advancePercentage,
       advance_amount: advanceAmount,
-      status: 'planting',
       notes,
     };
     
-    // TODO: Save crop cycle to database
-    console.log('Crop Cycle Data:', cropCycleData);
+    // Save crop cycle to database
+    const cycleResult = await cropCycleService.createCropCycle(cropCycleData);
+    console.log('Crop Cycle Created:', cycleResult);
+    
+    // Store the crop cycle ID for potential monitoring/harvest later
+    if (cycleResult?.data?._id) {
+      setActiveCropCycleId(cycleResult.data._id);
+    }
     
     // Create advance payment request
     const paymentData = {
@@ -160,8 +201,8 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
       status: 'pending',
       calculation: {
         expected_yield: parseFloat(expectedYield),
-        rate: CROP_RATES[cropType]["Grade A"],
-        expected_value: parseFloat(expectedYield) * CROP_RATES[cropType]["Grade A"],
+        rate: getCropRate("Grade A"),
+        expected_value: parseFloat(expectedYield) * getCropRate("Grade A"),
         percentage: advancePercentage,
         advance: advanceAmount,
       },
@@ -172,20 +213,33 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
   };
   
   const handleHarvestSubmit = async () => {
-    // Create harvest record
-    const harvestData = {
+    // Find the most recent active crop cycle for this farmer and crop type
+    const cyclesResponse = await cropCycleService.getAllCropCycles({
       farmer_id: selectedFarmer,
       crop_type: cropType,
+      status: 'active'
+    });
+    
+    const activeCycles = cyclesResponse?.data || [];
+    if (activeCycles.length === 0) {
+      throw new Error('No active crop cycle found for this farmer and crop. Please start with a planting visit.');
+    }
+    
+    // Use the most recent active cycle
+    const cropCycleId = activeCycles[0]._id;
+    
+    // Record harvest data
+    const harvestData = {
       harvest_date: harvestDate,
-      quantity_kg: parseFloat(actualQuantity),
+      actual_yield_kg: parseFloat(actualQuantity),
       quality_grade: qualityGrade,
-      moisture_content: moistureContent ? parseFloat(moistureContent) : null,
+      moisture_content: moistureContent ? parseFloat(moistureContent) : undefined,
       harvest_value: harvestValue,
       notes,
     };
     
-    // TODO: Save harvest to database
-    console.log('Harvest Data:', harvestData);
+    await cropCycleService.recordHarvest(cropCycleId, harvestData);
+    console.log('Harvest recorded for crop cycle:', cropCycleId);
     
     // Create final payment request
     const paymentData = {
@@ -197,7 +251,7 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
       calculation: {
         actual_yield: parseFloat(actualQuantity),
         quality_grade: qualityGrade,
-        rate: CROP_RATES[cropType][qualityGrade],
+        rate: getCropRate(qualityGrade),
         harvest_value: harvestValue,
         advance_paid: previousAdvance,
         balance_due: finalPayment,
@@ -209,19 +263,31 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
   };
   
   const handleMonitoringSubmit = async () => {
-    // Create monitoring visit record
-    const monitoringData = {
+    // Find the most recent active crop cycle for this farmer and crop type
+    const cyclesResponse = await cropCycleService.getAllCropCycles({
       farmer_id: selectedFarmer,
       crop_type: cropType,
-      visit_date: new Date().toISOString(),
+      status: 'active'
+    });
+    
+    const activeCycles = cyclesResponse?.data || [];
+    if (activeCycles.length === 0) {
+      throw new Error('No active crop cycle found for this farmer and crop. Please start with a planting visit.');
+    }
+    
+    // Use the most recent active cycle
+    const cropCycleId = activeCycles[0]._id;
+    
+    // Add monitoring visit to the crop cycle
+    const monitoringData = {
       health_status: healthStatus,
-      pest_present: pestPresent,
+      pest_detected: pestPresent,
       pest_details: pestDetails,
       notes,
     };
     
-    // TODO: Save monitoring record to database
-    console.log('Monitoring Data:', monitoringData);
+    await cropCycleService.addMonitoringVisit(cropCycleId, monitoringData);
+    console.log('Monitoring visit added to crop cycle:', cropCycleId);
   };
   
   const resetForm = () => {
@@ -340,12 +406,16 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
                 onChange={(e) => setCropType(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
                 required
+                disabled={loadingCrops}
               >
-                <option value="maize">Maize</option>
-                <option value="rice">Rice</option>
-                <option value="coffee">Coffee</option>
-                <option value="beans">Beans</option>
-                <option value="cassava">Cassava</option>
+                <option value="">
+                  {loadingCrops ? 'Loading crops...' : 'Select a crop'}
+                </option>
+                {crops.map((crop) => (
+                  <option key={crop._id} value={crop.name.toLowerCase()}>
+                    {crop.icon} {crop.name}
+                  </option>
+                ))}
               </select>
             </div>
             
@@ -423,7 +493,7 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
                       <span className="text-gray-700">Rate per kg (Grade A):</span>
-                      <span className="font-semibold">UGX {CROP_RATES[cropType]["Grade A"].toLocaleString()}</span>
+                      <span className="font-semibold">UGX {getCropRate("Grade A").toLocaleString()}</span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-700">Expected yield:</span>
@@ -432,7 +502,7 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
                     <div className="flex justify-between">
                       <span className="text-gray-700">Expected value:</span>
                       <span className="font-semibold">
-                        UGX {(parseFloat(expectedYield) * CROP_RATES[cropType]["Grade A"]).toLocaleString()}
+                        UGX {(parseFloat(expectedYield) * getCropRate("Grade A")).toLocaleString()}
                       </span>
                     </div>
                     <div className="flex justify-between text-gray-600">
@@ -582,7 +652,7 @@ const RecordCropDataModal: React.FC<RecordCropDataModalProps> = ({ isOpen, onClo
                     <div className="flex justify-between">
                       <span className="text-gray-700">Rate per kg:</span>
                       <span className="font-semibold">
-                        UGX {CROP_RATES[cropType][qualityGrade].toLocaleString()}
+                        UGX {getCropRate(qualityGrade).toLocaleString()}
                       </span>
                     </div>
                     <div className="flex justify-between">

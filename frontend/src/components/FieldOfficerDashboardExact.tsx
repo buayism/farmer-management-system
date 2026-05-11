@@ -11,9 +11,12 @@ import { fieldService } from '../services/fieldService';
 import { harvestService } from '../services/harvestService';
 import { reportService } from '../services/reportService';
 import { paymentService } from '../services/paymentService';
+import { cropService } from '../services/cropService';
+import { cropCycleService } from '../services/cropCycleService';
 import FieldGoogleMap from './FieldGoogleMap';
 import AddLocationModal from './AddLocationModal';
 import RecordCropDataModal from './RecordCropDataModal';
+import AddCropModal from './AddCropModal';
 import { useToast } from './Toast';
 
 const FieldOfficerDashboard: React.FC = () => {
@@ -258,6 +261,15 @@ const FieldOfficerDashboard: React.FC = () => {
   const [showHarvestModal, setShowHarvestModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showAddCropModal, setShowAddCropModal] = useState(false);
+
+  // Crops data
+  const [crops, setCrops] = useState<any[]>([]);
+  const [cropsLoading, setCropsLoading] = useState(false);
+  
+  // Crop cycles data (for progress bars)
+  const [cropCycleSummary, setCropCycleSummary] = useState<any[]>([]);
+  const [cropCyclesLoading, setCropCyclesLoading] = useState(false);
 
   
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
@@ -375,6 +387,41 @@ const FieldOfficerDashboard: React.FC = () => {
         if (!mounted) return;
         setReports(rpArr);
 
+        // Crops
+        try {
+          setCropsLoading(true);
+          const cropsResponse = await cropService.getAllCrops();
+          if (!mounted) return;
+          const cropsArr = Array.isArray(cropsResponse?.data) ? cropsResponse.data : (cropsResponse?.data || []);
+          
+          // If no crops exist, initialize default crops
+          if (cropsArr.length === 0) {
+            await cropService.initializeDefaultCrops();
+            const retryResponse = await cropService.getAllCrops();
+            const retryCropsArr = Array.isArray(retryResponse?.data) ? retryResponse.data : (retryResponse?.data || []);
+            setCrops(retryCropsArr);
+          } else {
+            setCrops(cropsArr);
+          }
+        } catch (cropError) {
+          console.error('Failed to load crops:', cropError);
+        } finally {
+          setCropsLoading(false);
+        }
+
+        // Crop Cycles Summary (for My Crops progress bars)
+        try {
+          setCropCyclesLoading(true);
+          const cyclesResponse = await cropCycleService.getCropCyclesSummary();
+          if (!mounted) return;
+          const cyclesSummary = Array.isArray(cyclesResponse?.data) ? cyclesResponse.data : (cyclesResponse?.data || []);
+          setCropCycleSummary(cyclesSummary);
+        } catch (cycleError) {
+          console.error('Failed to load crop cycles:', cycleError);
+        } finally {
+          setCropCyclesLoading(false);
+        }
+
         // Visits suggested: count of fields needing attention (derived above)
       } catch (e) {
         if (!mounted) return;
@@ -430,15 +477,53 @@ const FieldOfficerDashboard: React.FC = () => {
     { date: 'Tue 38', openSoil: 30, low: 55, ideal: 70, high: 25, cloud: 30 }
   ];
 
-  // My crops data - EXACT from your image
-  const myCropsData = [
-    { name: 'Barley', progress: 90, color: '#90EE90', status: 'Excellent' },
-    { name: 'Millet', progress: 65, color: '#90EE90', status: 'Sprouting' },
-    { name: 'Corn', progress: 25, color: '#DEB887', status: 'Planted' },
-    { name: 'Oats', progress: 70, color: '#FFD700', status: 'Sprouting' },
-    { name: 'Rice', progress: 10, color: '#FFA500', status: 'Planted' },
-    { name: 'Wheat', progress: 100, color: '#8B4513', status: 'Harvest' }
-  ];
+  // My crops data - now with REAL crop cycle data
+  const myCropsData = React.useMemo(() => {
+    // If we have crop cycle data, use it; otherwise show all crops without cycles
+    if (cropCycleSummary.length > 0) {
+      return cropCycleSummary.map((cycleSummary: any) => {
+        // Find the matching crop definition for icon and rates
+        const cropDef = crops.find(c => c.name.toLowerCase() === cycleSummary._id.toLowerCase());
+        
+        // Map stage to user-friendly status
+        const statusMap: { [key: string]: string } = {
+          'planting': 'Growing',
+          'monitoring': 'Monitoring',
+          'harvest': 'Harvested'
+        };
+        
+        // Map stage to color
+        const colorMap: { [key: string]: string } = {
+          'planting': '#90EE90',    // Light green - growing
+          'monitoring': '#FFD700',  // Gold - monitoring
+          'harvest': '#DEB887'      // Brown - harvest ready
+        };
+        
+        return {
+          name: cycleSummary.crop_name || cycleSummary._id,
+          icon: cropDef?.icon || '🌾',
+          rates: cropDef?.rates || {},
+          progress: cycleSummary.progress_percentage || 0,
+          color: colorMap[cycleSummary.current_stage] || '#90EE90',
+          status: statusMap[cycleSummary.current_stage] || 'Active',
+          total_area: cycleSummary.total_area || 0,
+          total_cycles: cycleSummary.total_cycles || 0
+        };
+      });
+    } else {
+      // No crop cycles yet, show available crops with 0% progress
+      return crops.slice(0, 6).map((crop: any) => ({
+        name: crop.name,
+        icon: crop.icon || '🌾',
+        rates: crop.rates,
+        progress: 0,
+        color: '#E0E0E0',
+        status: 'Not Started',
+        total_area: 0,
+        total_cycles: 0
+      }));
+    }
+  }, [crops, cropCycleSummary]);
 
   const handleWallpaperSelect = (wallpaper: any) => {
     setWallpaper(wallpaper);
@@ -601,6 +686,13 @@ const FieldOfficerDashboard: React.FC = () => {
                 <span className="text-sm">📊</span>
                 {isSidebarExpanded && <span className="font-medium">Dashboard</span>}
               </div>
+              <button 
+                onClick={() => setShowAddCropModal(true)}
+                className="w-full flex items-center space-x-3 bg-green-500 hover:bg-green-600 text-white px-5 py-4 rounded-xl transition-colors shadow-lg text-base font-semibold"
+              >
+                <span className="text-sm">🌱</span>
+                {isSidebarExpanded && <span className="font-medium">Add Crop</span>}
+              </button>
               <button 
                 onClick={() => setShowLocationModal(true)}
                 className="w-full flex items-center space-x-3 text-gray-600 px-5 py-4 rounded-xl hover:bg-gray-50 transition-colors text-base font-semibold"
@@ -792,25 +884,6 @@ const FieldOfficerDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick Reports */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-              <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-6">
-                <p className="text-sm text-gray-500">Crop Health</p>
-                <p className="mt-1 text-2xl font-semibold text-gray-900">Healthy: {fields.filter((x:any)=>x.health_status==='healthy').length}</p>
-                <button onClick={()=>setShowReportModal(true)} className="mt-3 px-3 py-2 bg-indigo-600 text-white rounded-md text-sm">Generate</button>
-              </div>
-              <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-6">
-                <p className="text-sm text-gray-500">Harvest Readiness</p>
-                <p className="mt-1 text-2xl font-semibold text-gray-900">Ready: {readyFieldsCount}</p>
-                <button onClick={()=>setShowReportModal(true)} className="mt-3 px-3 py-2 bg-indigo-600 text-white rounded-md text-sm">Generate</button>
-              </div>
-              <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-6">
-                <p className="text-sm text-gray-500">Input Needs</p>
-                <p className="mt-1 text-2xl font-semibold text-gray-900">Needs: {needsAttentionFields}</p>
-                <button onClick={()=>setShowReportModal(true)} className="mt-3 px-3 py-2 bg-indigo-600 text-white rounded-md text-sm">Generate</button>
-              </div>
-            </div>
-
             {/* Bottom Row - Crop Growth Monitoring and My Crops - EXACT Layout */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Crop Growth Monitoring - EXACT from your image */}
@@ -882,31 +955,45 @@ const FieldOfficerDashboard: React.FC = () => {
                 </div>
 
                 <div className="space-y-4">
-                  {myCropsData.map((crop, index) => (
-                    <div key={index} className="space-y-2">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
-                          <span className="text-sm">🌾</span>
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex justify-between items-center">
-                            <span className="font-medium text-sm">{crop.name}</span>
-                            <span className="text-xs text-gray-500">{crop.progress}%</span>
+                  {(cropsLoading || cropCyclesLoading) ? (
+                    <p className="text-center text-gray-500 py-4">Loading crops...</p>
+                  ) : myCropsData.length === 0 ? (
+                    <div className="text-center py-6">
+                      <p className="text-gray-500 text-sm mb-3">No crops added yet</p>
+                      <button
+                        onClick={() => setShowAddCropModal(true)}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm"
+                      >
+                        🌱 Add Your First Crop
+                      </button>
+                    </div>
+                  ) : (
+                    myCropsData.map((crop, index) => (
+                      <div key={index} className="space-y-2">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center">
+                            <span className="text-sm">{crop.icon}</span>
                           </div>
-                          <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
-                            <div 
-                              className="h-2 rounded-full" 
-                              style={{ 
-                                width: `${crop.progress}%`, 
-                                backgroundColor: crop.color 
-                              }}
-                            ></div>
+                          <div className="flex-1">
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium text-sm">{crop.name}</span>
+                              <span className="text-xs text-gray-500">{crop.progress}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                              <div 
+                                className="h-2 rounded-full" 
+                                style={{ 
+                                  width: `${crop.progress}%`, 
+                                  backgroundColor: crop.color 
+                                }}
+                              ></div>
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1">{crop.status}</p>
                           </div>
-                          <p className="text-xs text-gray-600 mt-1">{crop.status}</p>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))
+                  )}
                 </div>
               </div>
             </div>
@@ -1227,11 +1314,35 @@ const FieldOfficerDashboard: React.FC = () => {
       <RecordCropDataModal 
         isOpen={showHarvestModal}
         onClose={() => setShowHarvestModal(false)}
-        onSuccess={(message) => {
+        onSuccess={async (message) => {
           showToast(message, 'success');
           setActionMessage(message);
-          // Optionally refresh data here
+          // Reload crop cycle data to update progress bars
+          try {
+            const cyclesResponse = await cropCycleService.getCropCyclesSummary();
+            const cyclesSummary = Array.isArray(cyclesResponse?.data) ? cyclesResponse.data : (cyclesResponse?.data || []);
+            setCropCycleSummary(cyclesSummary);
+          } catch (error) {
+            console.error('Failed to reload crop cycles:', error);
+          }
           setTimeout(() => setActionMessage(''), 3000);
+        }}
+      />
+
+      {/* Add Crop Modal */}
+      <AddCropModal
+        isOpen={showAddCropModal}
+        onClose={() => setShowAddCropModal(false)}
+        onSuccess={async (message) => {
+          showToast(message, 'success');
+          // Reload crops to update the My Crops section
+          try {
+            const cropsResponse = await cropService.getAllCrops();
+            const cropsArr = Array.isArray(cropsResponse?.data) ? cropsResponse.data : (cropsResponse?.data || []);
+            setCrops(cropsArr);
+          } catch (error) {
+            console.error('Failed to reload crops:', error);
+          }
         }}
       />
 

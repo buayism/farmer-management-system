@@ -1,16 +1,20 @@
 import React from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { MapPin, TrendingUp, Users, DollarSign, Truck, Package } from 'lucide-react';
+import { Users, DollarSign, FileText } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
 import UserProfileDropdown from './UserProfileDropdown';
 import FieldGoogleMap from './FieldGoogleMap';
 import ProcessPaymentModal from './ProcessPaymentModal';
+import ManagerPaymentsList from './ManagerPaymentsList';
 import { useToast } from './Toast';
 import { paymentService } from '../services/paymentService';
 import { financeService } from '../services/financeService';
 import { harvestService } from '../services/harvestService';
 import { farmerService } from '../services/farmerService';
+import { fieldService } from '../services/fieldService';
+import { cropCycleService } from '../services/cropCycleService';
+import { cropService } from '../services/cropService';
 import { formatUGX } from '../utils/currency';
 
 const ManagerDashboard: React.FC = () => {
@@ -33,6 +37,11 @@ const ManagerDashboard: React.FC = () => {
   const [allFarmsModalOpen, setAllFarmsModalOpen] = React.useState(false);
   const [processPaymentModalOpen, setProcessPaymentModalOpen] = React.useState(false);
   const [selectedPayment, setSelectedPayment] = React.useState<any>(null);
+  const [showPaymentsList, setShowPaymentsList] = React.useState(false);
+  const [cropCycles, setCropCycles] = React.useState<any[]>([]);
+  const [crops, setCrops] = React.useState<any[]>([]);
+  const [fieldOfficers, setFieldOfficers] = React.useState<any[]>([]);
+  const [fields, setFields] = React.useState<any[]>([]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -40,13 +49,24 @@ const ManagerDashboard: React.FC = () => {
       try {
         setPpLoading(true);
         setPpError('');
-        const [pendingRes, approvalsRes, approvedRes, allPaysRes, farmersRes, harvestsRes] = await Promise.all([
+        const [pendingRes, approvalsRes, approvedRes, allPaysRes, farmersRes, harvestsRes, cropsRes, cyclesRes, usersRes, fieldsRes] = await Promise.all([
           paymentService.getPaymentsByStatus('pending'),
           financeService.getApprovalRequests('pending'),
           paymentService.getPaymentsByStatus('approved'),
           paymentService.getAllPayments(),
           farmerService.getAllFarmers(),
           harvestService.getAllHarvests(),
+          cropService.getAllCrops(),
+          cropCycleService.getAllCropCycles({ status: 'active' }),
+          farmerService.getAllFarmers().then((res: any) => {
+            // Also fetch users to get field officers count
+            return fetch('/api/users', {
+              headers: {
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+              }
+            }).then(r => r.json());
+          }).catch(() => ({ data: [] })),
+          fieldService.getAllFields()
         ]);
         if (!mounted) return;
         console.log('📊 [Manager Dashboard] Approved payments response:', approvedRes);
@@ -63,6 +83,13 @@ const ManagerDashboard: React.FC = () => {
           .sort((a:any,b:any)=> new Date(b.harvest_date||b.created_at||0).getTime()-new Date(a.harvest_date||a.created_at||0).getTime())
           .slice(0,6)
         );
+        setCrops(Array.isArray(cropsRes?.data) ? cropsRes.data : (cropsRes?.data || []));
+        setCropCycles(Array.isArray(cyclesRes?.data) ? cyclesRes.data : (cyclesRes?.data || []));
+        const users = Array.isArray(usersRes?.data) ? usersRes.data : (usersRes?.users || usersRes?.data || []);
+        const officers = users.filter((u: any) => u.role === 'field_officer');
+        setFieldOfficers(officers);
+        const fieldsArr = Array.isArray(fieldsRes) ? fieldsRes : (fieldsRes?.data || fieldsRes?.items || []);
+        setFields(fieldsArr);
       } catch (e) {
         if (!mounted) return;
         setPpError('Failed to load pending payments');
@@ -95,13 +122,46 @@ const ManagerDashboard: React.FC = () => {
   };
   // Map markers come from farmers list; default layout used when coords are absent
 
-  // Performance metrics data
-  const performanceData = [
-    { metric: 'Crop Yield', value: 85, color: '#22c55e' },
-    { metric: 'Efficiency', value: 92, color: '#3b82f6' },
-    { metric: 'Quality Score', value: 78, color: '#f59e0b' },
-    { metric: 'Sustainability', value: 88, color: '#10b981' }
-  ];
+  // Performance metrics data - REAL DATA
+  const performanceData = React.useMemo(() => {
+    // 1. Crop Yield Achievement - (Actual Yield / Expected Yield) × 100
+    let cropYieldPercentage = 0;
+    const completedCycles = cropCycles.filter((c: any) => c.status === 'completed' && c.actual_yield_kg && c.expected_yield_kg);
+    if (completedCycles.length > 0) {
+      const totalExpected = completedCycles.reduce((sum: number, c: any) => sum + (parseFloat(c.expected_yield_kg) || 0), 0);
+      const totalActual = completedCycles.reduce((sum: number, c: any) => sum + (parseFloat(c.actual_yield_kg) || 0), 0);
+      cropYieldPercentage = totalExpected > 0 ? Math.round((totalActual / totalExpected) * 100) : 0;
+    }
+
+    // 2. Quality Score - (Grade A harvests / Total harvests) × 100
+    let qualityScore = 0;
+    if (recentHarvests.length > 0) {
+      const gradeACount = recentHarvests.filter((h: any) => h.quality_grade === 'Grade A' || h.quality_grade === 'A').length;
+      qualityScore = Math.round((gradeACount / recentHarvests.length) * 100);
+    }
+
+    // 3. Payment Processing Rate - (Approved / Total Requests) × 100
+    let paymentEfficiency = 0;
+    const totalPayments = allPayments.length;
+    if (totalPayments > 0) {
+      const approvedCount = approvedPayments.length;
+      paymentEfficiency = Math.round((approvedCount / totalPayments) * 100);
+    }
+
+    // 4. Crop Diversity Index - (Active Crop Types / 10) × 100
+    let cropDiversity = 0;
+    if (cropCycles.length > 0) {
+      const uniqueCrops = new Set(cropCycles.map((c: any) => c.crop_type || c.cropType));
+      cropDiversity = Math.min(Math.round((uniqueCrops.size / 10) * 100), 100);
+    }
+
+    return [
+      { metric: 'Crop Yield Achievement', value: cropYieldPercentage, color: '#22c55e' },
+      { metric: 'Quality Score', value: qualityScore, color: '#f59e0b' },
+      { metric: 'Payment Processing', value: paymentEfficiency, color: '#3b82f6' },
+      { metric: 'Crop Diversity', value: cropDiversity, color: '#10b981' }
+    ];
+  }, [cropCycles, recentHarvests, approvedPayments, allPayments]);
 
   // Revenue analytics data
   const revenueData = [
@@ -119,31 +179,182 @@ const ManagerDashboard: React.FC = () => {
     { month: 'Dec', revenue: 75000, profit: 23000 }
   ];
 
-  // Crop distribution data
-  const cropDistributionData = [
-    { name: 'Wheat', value: 35, color: '#f59e0b', acres: 1200 },
-    { name: 'Corn', value: 25, color: '#22c55e', acres: 850 },
-    { name: 'Rice', value: 20, color: '#3b82f6', acres: 680 },
-    { name: 'Vegetables', value: 12, color: '#ef4444', acres: 410 },
-    { name: 'Fruits', value: 8, color: '#8b5cf6', acres: 270 }
-  ];
+  // Crop distribution data - calculated from real crop cycles
+  const cropDistributionData = React.useMemo(() => {
+    if (cropCycles.length === 0) {
+      return [];
+    }
 
-  // Recent activities data
-  const recentActivities = [
-    { id: 1, activity: 'Harvest completed at North Farm', time: '2 hours ago', type: 'harvest' },
-    { id: 2, activity: 'New irrigation system installed', time: '4 hours ago', type: 'maintenance' },
-    { id: 3, activity: 'Quality inspection passed', time: '6 hours ago', type: 'inspection' },
-    { id: 4, activity: 'Fertilizer application scheduled', time: '8 hours ago', type: 'treatment' },
-    { id: 5, activity: 'Equipment maintenance completed', time: '1 day ago', type: 'maintenance' }
-  ];
+    // Define color palette for different crops
+    const colorPalette = ['#f59e0b', '#22c55e', '#3b82f6', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 
-  // Key metrics for cards
-  const keyMetrics = [
-    { title: 'Total Revenue', value: 'UGX 742K', change: '+12.5%', icon: DollarSign, color: 'text-green-600' },
-    { title: 'Active Farms', value: '24', change: '+2', icon: MapPin, color: 'text-blue-600' },
-    { title: 'Total Workers', value: '156', change: '+8', icon: Users, color: 'text-purple-600' },
-    { title: 'Equipment', value: '89', change: '+3', icon: Truck, color: 'text-orange-600' }
-  ];
+    // Group by crop type and sum up areas
+    const cropTotals: { [key: string]: { name: string; acres: number; icon: string } } = {};
+    
+    cropCycles.forEach((cycle: any) => {
+      const cropKey = cycle.crop_type || cycle.cropType || 'unknown';
+      const cropName = cycle.crop_name || cycle.cropType || cropKey;
+      const area = parseFloat(cycle.area_planted || 0);
+      
+      // Find crop icon from crops list
+      const cropDef = crops.find(c => c.name.toLowerCase() === cropKey.toLowerCase());
+      const icon = cropDef?.icon || '🌾';
+      
+      if (!cropTotals[cropKey]) {
+        cropTotals[cropKey] = { name: cropName, acres: 0, icon };
+      }
+      cropTotals[cropKey].acres += area;
+    });
+
+    // Calculate total acres
+    const totalAcres = Object.values(cropTotals).reduce((sum, crop) => sum + crop.acres, 0);
+    
+    if (totalAcres === 0) {
+      return [];
+    }
+
+    // Convert to array and calculate percentages
+    const distribution = Object.entries(cropTotals)
+      .map(([key, data], index) => ({
+        name: data.name,
+        value: Math.round((data.acres / totalAcres) * 100),
+        color: colorPalette[index % colorPalette.length],
+        acres: Math.round(data.acres),
+        icon: data.icon
+      }))
+      .sort((a, b) => b.acres - a.acres); // Sort by acres descending
+
+    return distribution;
+  }, [cropCycles, crops]);
+
+  // Recent activities data - REAL DATA from various sources
+  const recentActivities = React.useMemo(() => {
+    const activities: any[] = [];
+    
+    // Helper function to format time ago
+    const timeAgo = (date: Date) => {
+      const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+      if (seconds < 60) return 'just now';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+      const days = Math.floor(hours / 24);
+      if (days < 7) return `${days} day${days > 1 ? 's' : ''} ago`;
+      const weeks = Math.floor(days / 7);
+      if (weeks < 4) return `${weeks} week${weeks > 1 ? 's' : ''} ago`;
+      return date.toLocaleDateString();
+    };
+
+    // 1. Farmer Registrations
+    farmers.forEach((farmer: any) => {
+      if (farmer.registration_date || farmer.created_at) {
+        const regDate = new Date(farmer.registration_date || farmer.created_at);
+        activities.push({
+          id: `farmer-${farmer._id}`,
+          activity: `New farmer "${farmer.name}" registered`,
+          time: timeAgo(regDate),
+          timestamp: regDate.getTime(),
+          type: 'registration'
+        });
+      }
+    });
+
+    // 2. Crop Cycle Activities (Planting, Monitoring, Harvest)
+    cropCycles.forEach((cycle: any) => {
+      const farmerName = farmers.find((f: any) => f._id === cycle.farmer_id)?.name || 'Unknown Farmer';
+      const cropName = cycle.crop_name || cycle.crop_type || 'crop';
+      
+      // Check all visits
+      if (cycle.visits && Array.isArray(cycle.visits)) {
+        cycle.visits.forEach((visit: any) => {
+          const visitDate = new Date(visit.visit_date || visit.recorded_at);
+          const officerId = visit.recorded_by;
+          const officer = fieldOfficers.find((fo: any) => fo._id === officerId);
+          const officerName = officer ? `"${officer.name}"` : 'Field officer';
+          
+          if (visit.visit_type === 'planting') {
+            activities.push({
+              id: `visit-${cycle._id}-planting`,
+              activity: `${officerName} recorded planting of ${cropName} for farmer "${farmerName}" (${cycle.area_planted || 0} acres)`,
+              time: timeAgo(visitDate),
+              timestamp: visitDate.getTime(),
+              type: 'planting'
+            });
+          } else if (visit.visit_type === 'monitoring') {
+            const pestInfo = visit.pest_detected ? ' ⚠️ Pest attack detected!' : '';
+            activities.push({
+              id: `visit-${cycle._id}-monitoring-${visitDate.getTime()}`,
+              activity: `${officerName} made monitoring visit to "${farmerName}" farm - ${cropName} health: ${visit.health_status}${pestInfo}`,
+              time: timeAgo(visitDate),
+              timestamp: visitDate.getTime(),
+              type: visit.pest_detected ? 'pest' : 'monitoring'
+            });
+          } else if (visit.visit_type === 'harvest') {
+            const yieldKg = visit.actual_yield_kg || 0;
+            activities.push({
+              id: `visit-${cycle._id}-harvest`,
+              activity: `${officerName} recorded harvest at "${farmerName}" farm - ${yieldKg}kg of ${cropName} (Grade ${visit.quality_grade})`,
+              time: timeAgo(visitDate),
+              timestamp: visitDate.getTime(),
+              type: 'harvest'
+            });
+          }
+        });
+      }
+    });
+
+    // 3. Payment Approvals
+    approvedPayments.forEach((payment: any) => {
+      if (payment.updated_at || payment.approved_at) {
+        const approvalDate = new Date(payment.updated_at || payment.approved_at || payment.created_at);
+        const farmerName = farmers.find((f: any) => f._id === payment.farmer_id)?.name || 'Farmer';
+        const amount = formatUGX(parseFloat(payment.amount) || 0);
+        const paymentType = payment.payment_type || 'payment';
+        
+        activities.push({
+          id: `payment-${payment._id}`,
+          activity: `${paymentType === 'advance' ? 'Advance' : 'Final'} payment of ${amount} approved for "${farmerName}"`,
+          time: timeAgo(approvalDate),
+          timestamp: approvalDate.getTime(),
+          type: 'payment'
+        });
+      }
+    });
+
+    // Sort by timestamp (most recent first) and take top 10
+    return activities
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 10);
+  }, [farmers, cropCycles, approvedPayments]);
+
+  // Key metrics for cards - REAL DATA
+  const keyMetrics = React.useMemo(() => {
+    // Calculate total expenditure from ALL payments (not just approved)
+    const totalExpenditure = allPayments.reduce((sum, payment) => {
+      return sum + (parseFloat(payment.amount) || 0);
+    }, 0);
+
+    // Count all registered farmers
+    const allFarmers = farmers.length;
+
+    return [
+      { 
+        title: 'Total Expenditure', 
+        value: formatUGX(totalExpenditure), 
+        change: `${allPayments.length} payments`, 
+        icon: DollarSign, 
+        color: 'text-red-600' 
+      },
+      { 
+        title: 'All Farmers', 
+        value: allFarmers.toString(), 
+        change: `${allFarmers} registered`, 
+        icon: Users, 
+        color: 'text-purple-600' 
+      }
+    ];
+  }, [allPayments, farmers]);
 
   // Manager decisions on finance approval requests
   const decideApproval = async (id: string, decision: 'approved' | 'denied') => {
@@ -198,6 +409,15 @@ const ManagerDashboard: React.FC = () => {
             
             {/* Right Section - Utilities */}
             <div className="flex items-center space-x-1">
+              {/* Payments */}
+              <button
+                onClick={() => setShowPaymentsList(!showPaymentsList)}
+                className="flex flex-col items-center space-y-1 px-3 py-1 hover:bg-white/20 rounded-lg transition"
+              >
+                <FileText className="w-5 h-5 text-white" />
+                <span className="text-xs font-medium text-white">Payments</span>
+              </button>
+              
               {/* Notifications */}
               <div className="flex flex-col items-center space-y-1">
                 <NotificationBell />
@@ -217,6 +437,11 @@ const ManagerDashboard: React.FC = () => {
       {/* Add top padding to account for fixed header */}
       <div className="pt-20"></div>
 
+      {/* Conditional Render: Dashboard or Payments List */}
+      {showPaymentsList ? (
+        <ManagerPaymentsList onBack={() => setShowPaymentsList(false)} />
+      ) : (
+      <>
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="space-y-6">
@@ -322,14 +547,14 @@ const ManagerDashboard: React.FC = () => {
             </div>
 
           {/* Metrics Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {keyMetrics.map((metric, index) => (
               <div key={index} className="bg-white rounded-lg shadow-sm p-6">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-600">{metric.title}</p>
                     <p className="text-3xl font-bold text-gray-900">{metric.value}</p>
-                    <p className={`text-sm ${metric.color} mt-1`}>{metric.change} from last month</p>
+                    <p className={`text-sm ${metric.color} mt-1`}>{metric.change}</p>
                   </div>
                   <div className={`p-3 rounded-lg bg-gray-100`}>
                     <metric.icon className={`w-6 h-6 ${metric.color}`} />
@@ -345,116 +570,15 @@ const ManagerDashboard: React.FC = () => {
             <div className="lg:col-span-2 space-y-8">
               {/* Farm Locations Map */}
               <div className="bg-white rounded-lg shadow-sm p-6">
-                <div className="flex justify-between items-center mb-4">
-                  <div>
-                    <h2 className="text-xl font-semibold">Farm Locations</h2>
-                    <span className="text-xs text-gray-500">Interactive map showing all registered farms</span>
-                  </div>
-                  <button 
-                    onClick={() => setAllFarmsModalOpen(!allFarmsModalOpen)}
-                    className="px-4 py-2 text-sm bg-gradient-to-r from-[#7C3AED] to-[#9333EA] text-white rounded-lg hover:from-[#6D28D9] hover:to-[#7C3AED] transition-all shadow-md hover:shadow-lg flex items-center gap-2"
-                  >
-                    {allFarmsModalOpen ? (
-                      <>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                        </svg>
-                        Hide Farms List
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                        View All Farms ({farmers.length})
-                      </>
-                    )}
-                  </button>
+                <div className="mb-4">
+                  <h2 className="text-xl font-semibold">Farm Locations</h2>
+                  <span className="text-xs text-gray-500">Interactive map showing all registered farms</span>
                 </div>
                 
                 <div className="relative z-0">
                   <FieldGoogleMap farmers={farmers} height="400px" />
                 </div>
                 <p className="mt-2 text-xs text-gray-500">Click on map markers to view farmer details and work rates.</p>
-
-                {/* Farms List - Collapsible */}
-                {allFarmsModalOpen && (
-                  <div className="mt-6 border-t border-gray-200 pt-6">
-                    <div className="mb-4">
-                      <h3 className="text-lg font-semibold text-gray-900">All Registered Farms ({farmers.length})</h3>
-                      <p className="text-sm text-gray-500">Complete list with details and GPS status</p>
-                    </div>
-                    
-                    {farmers.length === 0 ? (
-                      <div className="text-center py-8 text-gray-500">
-                        <svg className="w-12 h-12 mx-auto mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        <p>No farms registered yet</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {farmers.map((farmer, index) => (
-                          <div 
-                            key={farmer._id} 
-                            className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow bg-white"
-                          >
-                            <div className="flex justify-between items-start mb-3">
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-purple-100 text-purple-600 text-xs font-bold">
-                                    {index + 1}
-                                  </span>
-                                  <h4 className="font-semibold text-gray-900">{farmer.name || 'Unknown Farmer'}</h4>
-                                </div>
-                                <p className="text-xs text-gray-500">ID: {String(farmer._id).substring(0, 12)}...</p>
-                              </div>
-                              {farmer.location?.coordinates ? (
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                  <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                                    <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
-                                  </svg>
-                                  GPS
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                                  No GPS
-                                </span>
-                              )}
-                            </div>
-                            
-                            <div className="space-y-2 text-sm">
-                              <div className="flex items-center gap-2 text-gray-600">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                                </svg>
-                                <span>{farmer.contact || farmer.phone || 'No contact'}</span>
-                              </div>
-                              
-                              {farmer.crops && farmer.crops.length > 0 && (
-                                <div className="flex items-center gap-2 text-gray-600">
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-                                  </svg>
-                                  <span className="truncate">{farmer.crops.join(', ')}</span>
-                                </div>
-                              )}
-                            </div>
-                            
-                            <div className="mt-3 pt-3 border-t border-gray-100">
-                              <button 
-                                onClick={() => openWorkRates(String(farmer._id))}
-                                className="w-full px-3 py-2 text-sm font-medium text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors"
-                              >
-                                View Work Rates & Details
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Performance Metrics */}
@@ -462,20 +586,26 @@ const ManagerDashboard: React.FC = () => {
                 <h2 className="text-xl font-semibold mb-6">Performance Metrics</h2>
                 <div className="grid grid-cols-2 gap-6">
                   {performanceData.map((item, index) => (
-                    <div key={index} className="space-y-3">
+                    <div key={index} className="space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-700">{item.metric}</span>
                         <span className="text-sm font-bold text-gray-900">{item.value}%</span>
                       </div>
-                      <div className="w-full bg-gray-200 rounded-full h-3">
+                      <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
                         <div
-                          className="h-3 rounded-full transition-all duration-300"
+                          className="h-3 rounded-full transition-all duration-500 ease-out"
                           style={{
-                            width: `${item.value}%`,
+                            width: `${Math.min(item.value, 100)}%`,
                             backgroundColor: item.color
                           }}
                         ></div>
                       </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {item.metric === 'Crop Yield Achievement' && 'Actual vs expected harvest yields'}
+                        {item.metric === 'Quality Score' && 'Percentage of Grade A harvests'}
+                        {item.metric === 'Payment Processing' && 'Approved payment requests'}
+                        {item.metric === 'Crop Diversity' && 'Variety of crops being grown'}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -513,43 +643,54 @@ const ManagerDashboard: React.FC = () => {
               <div className="bg-white rounded-lg shadow-sm p-6">
                 <h2 className="text-xl font-semibold mb-6">Crop Distribution</h2>
                 
-                <div className="h-64 mb-6">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={cropDistributionData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={40}
-                        outerRadius={80}
-                        dataKey="value"
-                      >
-                        {cropDistributionData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="space-y-3">
-                  {cropDistributionData.map((item, index) => (
-                    <div key={index} className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2">
-                        <div
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: item.color }}
-                        ></div>
-                        <span className="text-sm font-medium">{item.name}</span>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-sm font-bold text-gray-900">{item.value}%</div>
-                        <div className="text-xs text-gray-500">{item.acres} acres</div>
-                      </div>
+                {cropDistributionData.length === 0 ? (
+                  <div className="text-center py-12">
+                    <div className="text-6xl mb-4">🌾</div>
+                    <p className="text-gray-500 text-sm">No crop data available</p>
+                    <p className="text-gray-400 text-xs mt-2">Field Officers need to record crop planting data</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="h-64 mb-6">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={cropDistributionData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={40}
+                            outerRadius={80}
+                            dataKey="value"
+                          >
+                            {cropDistributionData.map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip />
+                        </PieChart>
+                      </ResponsiveContainer>
                     </div>
-                  ))}
-                </div>
+
+                    <div className="space-y-3">
+                      {cropDistributionData.map((item, index) => (
+                        <div key={index} className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <div
+                              className="w-3 h-3 rounded-full"
+                              style={{ backgroundColor: item.color }}
+                            ></div>
+                            <span className="text-sm">{item.icon}</span>
+                            <span className="text-sm font-medium">{item.name}</span>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-sm font-bold text-gray-900">{item.value}%</div>
+                            <div className="text-xs text-gray-500">{item.acres} acres</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Recent Activities */}
@@ -559,50 +700,41 @@ const ManagerDashboard: React.FC = () => {
                   <button className="text-sm text-blue-600 hover:text-blue-800">View All</button>
                 </div>
 
-                <div className="space-y-4">
-                  {recentActivities.map((activity) => (
-                    <div key={activity.id} className="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg">
-                      <div className={`w-2 h-2 rounded-full mt-2 ${
-                        activity.type === 'harvest' ? 'bg-green-500' :
-                        activity.type === 'maintenance' ? 'bg-blue-500' :
-                        activity.type === 'inspection' ? 'bg-yellow-500' :
-                        'bg-purple-500'
-                      }`}></div>
-                      <div className="flex-1">
-                        <p className="text-sm font-medium text-gray-900">{activity.activity}</p>
-                        <p className="text-xs text-gray-500">{activity.time}</p>
+                {recentActivities.length === 0 ? (
+                  <div className="text-center py-8">
+                    <p className="text-gray-500 text-sm">No recent activities</p>
+                    <p className="text-gray-400 text-xs mt-2">Activities will appear as Field Officers work</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {recentActivities.map((activity) => (
+                      <div key={activity.id} className="flex items-start space-x-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition">
+                        <div className={`w-2 h-2 rounded-full mt-2 ${
+                          activity.type === 'harvest' ? 'bg-green-500' :
+                          activity.type === 'planting' ? 'bg-emerald-500' :
+                          activity.type === 'monitoring' ? 'bg-blue-500' :
+                          activity.type === 'pest' ? 'bg-red-500' :
+                          activity.type === 'payment' ? 'bg-purple-500' :
+                          activity.type === 'registration' ? 'bg-indigo-500' :
+                          'bg-gray-500'
+                        }`}></div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{activity.activity}</p>
+                          <p className="text-xs text-gray-500">{activity.time}</p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Quick Actions */}
-              <div className="bg-white rounded-lg shadow-sm p-6">
-                <h2 className="text-xl font-semibold mb-6">Quick Actions</h2>
-                <div className="grid grid-cols-2 gap-3">
-                  <button className="p-3 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors">
-                    <Package className="w-5 h-5 mx-auto mb-1" />
-                    <span className="text-xs font-medium">Add Crop</span>
-                  </button>
-                  <button className="p-3 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors">
-                    <MapPin className="w-5 h-5 mx-auto mb-1" />
-                    <span className="text-xs font-medium">New Farm</span>
-                  </button>
-                  <button className="p-3 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 transition-colors">
-                    <Users className="w-5 h-5 mx-auto mb-1" />
-                    <span className="text-xs font-medium">Add Worker</span>
-                  </button>
-                  <button className="p-3 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 transition-colors">
-                    <TrendingUp className="w-5 h-5 mx-auto mb-1" />
-                    <span className="text-xs font-medium">Reports</span>
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
         </div>
       </div>
+
+      </>
+      )}
 
       {/* Work Rates Modal */}
       {(ratesModalOpen && ratesData) ? (
